@@ -89,6 +89,11 @@ mock.module("../src/auth", () => ({
   // generated-client.test.ts's.
   authClient: { getCookie: () => "better-auth.session_token=tolerant-reader" },
 }));
+// Signed in as a person: no API key in use.
+mock.module("../src/key-access", () => ({
+  keyAccess: async () => null,
+  keyAccessNow: () => null,
+}));
 mock.module("expo-crypto", () => ({
   randomUUID: () => crypto.randomUUID(),
 }));

@@ -15,6 +15,7 @@ import {
   phoneUpdateDetail,
   reportUpdateRequired,
 } from "../client-version";
+import { type KeyAccess, keyAccess } from "../key-access";
 import {
   createOrganizationChoice,
   IN_NO_ORGANIZATION,
@@ -24,8 +25,9 @@ import {
   type OrganizationChoices,
 } from "../organization";
 import { reportOrganizationGone } from "../organization-gone";
-import { reportRenewalNeedsClick } from "../renewal";
+import { reportRateLimited } from "../rate-limit";
 import { clientHeaders } from "../release";
+import { reportRenewalNeedsClick } from "../renewal";
 import { reportSessionRefused } from "../session-refused";
 import type { Deployment } from "./generated/model";
 import { getDeployment } from "./generated/organization-settings/organization-settings";
@@ -167,6 +169,8 @@ async function organizationFor(
  * the organization, starting with a slash.
  */
 export async function organizationAddress(rest: string): Promise<string> {
+  const access = await keyAccess();
+  if (access) return inKeyOrganization(`${WRITTEN}${rest}`, access);
   return inOrganization(`${ORGANIZATION}${rest}`, await authClient.getCookie());
 }
 
@@ -215,6 +219,8 @@ export async function organizationsHeld(): Promise<ListedOrganization[]> {
 
 /** The signed-in person's organizations, and the one they work in. */
 export async function organizationChoices(): Promise<OrganizationChoices> {
+  const access = await keyAccess();
+  if (access) return keyChoices(access);
   return organizations.choices((await authClient.getCookie()) ?? "");
 }
 
@@ -225,8 +231,47 @@ export async function organizationChoices(): Promise<OrganizationChoices> {
 export async function chooseOrganization(
   id: string,
 ): Promise<OrganizationChoices> {
+  const access = await keyAccess();
+  // A key works in the one organization it was made in: there is no other to pick.
+  if (access) return keyChoices(access);
   return organizations.choose(id, (await authClient.getCookie()) ?? "");
 }
+
+/** A key's organization, as the only one there is to work in. */
+function keyChoices(access: KeyAccess): OrganizationChoices {
+  return {
+    organizations: [
+      {
+        id: access.organization,
+        active: true,
+        ...(access.organizationName ? { name: access.organizationName } : {}),
+      },
+    ],
+    currentId: access.organization,
+  };
+}
+
+/** An address with the key's organization filled in. Any other address is left as it is. */
+function inKeyOrganization(url: string, access: KeyAccess): string {
+  if (!url.startsWith(WRITTEN)) return url;
+  const named = ORGANIZATION.replace(
+    ORGANIZATION_ID,
+    encodeURIComponent(access.organization),
+  );
+  return `${named}${url.slice(WRITTEN.length)}`;
+}
+
+/** Where a request goes: the key's OpenBot while a key is in use, else the one this build signs in to. */
+export async function currentServer(): Promise<string> {
+  return (await keyAccess())?.server ?? serverUrl;
+}
+
+/** How long a request waits for OpenBot to answer. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** What a person is told when OpenBot didn't answer in time. */
+export const NO_ANSWER =
+  "OpenBot didn't answer. Check that this device can reach it, then try again.";
 
 /** The person asking, as the API addresses them in its `people/{personId}` operations. */
 export const ME = "me";
@@ -263,13 +308,15 @@ export type ApiRequestInit = RequestInit & {
   anonymous?: boolean;
   /** Sent again after the hosted sign-in was renewed: refused for renewal again, it isn't renewed again. */
   renewed?: boolean;
+  /** Sent with this OpenBot and key, not the ones in use: a key being checked before it is kept (../key-check.ts). */
+  withKey?: Pick<KeyAccess, "server" | "key">;
 };
 
 export async function apiRequest<T>(
   url: string,
   options: ApiRequestInit = {},
 ): Promise<T> {
-  const { anonymous = false, renewed = false, ...init } = options;
+  const { anonymous = false, renewed = false, withKey, ...init } = options;
   if (!url.startsWith("/api/")) throw new Error("Use an OpenBot API path.");
   const method = (init.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = {};
@@ -280,21 +327,52 @@ export async function apiRequest<T>(
   if (apiWrite(url, method) && !headers["idempotency-key"])
     headers["idempotency-key"] = Crypto.randomUUID();
   Object.assign(headers, clientHeaders());
-  const cookie = anonymous ? null : await authClient.getCookie();
+  /*
+   * With an API key: to the key's OpenBot, in the key's organization, with the key. Never a cookie, and no
+   * OpenBot-Organization header, which a key ignores. Otherwise as whoever is signed in.
+   */
+  const access: KeyAccess | null = withKey
+    ? { ...withKey, organization: DEPLOYMENT_ORGANIZATION_ID }
+    : await keyAccess();
+  if (access && !anonymous) headers.authorization = `Bearer ${access.key}`;
+  const cookie = anonymous || access ? null : await authClient.getCookie();
   if (cookie) headers.cookie = cookie;
-  const address = await inOrganization(url, cookie);
-  const organization = await organizationFor(address, cookie);
+  const address = access
+    ? inKeyOrganization(url, access)
+    : await inOrganization(url, cookie);
+  const organization = access
+    ? undefined
+    : await organizationFor(address, cookie);
   if (organization) headers[ORGANIZATION_HEADER] = organization;
-  const response = await fetch(`${serverUrl}${address}`, {
-    ...init,
-    method,
-    headers,
-    credentials: "omit",
-  });
+  // A request that gets no answer ends, so nothing waits on it for ever: an OpenBot on another machine can be
+  // unreachable without refusing anything. A caller's own signal still applies.
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), REQUEST_TIMEOUT_MS);
+  const signal = init.signal ?? timeout.signal;
+  let response: Response;
+  try {
+    response = await fetch(`${access?.server ?? serverUrl}${address}`, {
+      ...init,
+      signal,
+      method,
+      headers,
+      credentials: "omit",
+    });
+  } catch (error) {
+    if (timeout.signal.aborted) throw new Error(NO_ANSWER);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   if (response.status === 204) return undefined as T;
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const { said, code, minimumVersion, security } = refusal(body);
+    // Too many requests: every screen's polling waits as long as OpenBot asks before reading again.
+    if (response.status === 429) {
+      const after = Number(response.headers.get("retry-after"));
+      reportRateLimited(Number.isFinite(after) ? after : null);
+    }
     // Sent as somebody signed in and refused as nobody: the session is gone, and the app reads it again.
     // Except a hosted OpenBot's sign-in needing renewal, which is never being signed out: the session still works.
     if (response.status === 401 && cookie && code !== RENEWAL_REQUIRED)

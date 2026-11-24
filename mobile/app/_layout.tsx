@@ -3,10 +3,11 @@ import { router, Stack } from "expo-router";
 import { useEffect, useRef } from "react";
 import { View } from "react-native";
 import { setSignedInPerson } from "../src/api";
-import { authClient } from "../src/auth";
 import { withSecurityFloor } from "../src/floor-gate";
 import { notificationDestination } from "../src/links";
 import { onSessionRefused } from "../src/session-refused";
+import { useSignedIn } from "../src/signed-in";
+import { useTheme } from "../src/theme";
 import { useVersionVerdict, VersionGate } from "../src/version-gate";
 
 Notifications.setNotificationHandler({
@@ -18,7 +19,8 @@ Notifications.setNotificationHandler({
   }),
 });
 function Layout() {
-  const { data: session, isPending, refetch } = authClient.useSession();
+  const theme = useTheme();
+  const { data: session, isPending, refetch } = useSignedIn();
   // Who is signed in, said before anything below asks for their organization: each person's pick is their own.
   setSignedInPerson(session?.user.id);
   // A signed-in request refused as signed out: the session is read again, and one that is gone shows the sign-in.
@@ -47,19 +49,27 @@ function Layout() {
     return () => subscription.remove();
   }, [session]);
   return (
-    <View style={{ flex: 1 }}>
-      <Stack screenOptions={{ headerBackTitle: "Back" }}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
+      <Stack
+        screenOptions={{
+          headerBackTitle: "Back",
+          // Every screen paints its own background: on Android XR a window without one is drawn see-through.
+          contentStyle: { backgroundColor: theme.background },
+          headerStyle: { backgroundColor: theme.card },
+          headerTintColor: theme.foreground,
+          headerShadowVisible: false,
+        }}
+      >
         <Stack.Screen name="index" options={{ title: "OpenBot" }} />
         <Stack.Screen name="conversation" options={{ title: "Conversation" }} />
-        <Stack.Screen name="approvals" options={{ title: "Approval inbox" }} />
-        <Stack.Screen name="needs-you" options={{ title: "Needs you" }} />
+        <Stack.Screen
+          name="new-conversation"
+          options={{ title: "New conversation" }}
+        />
         <Stack.Screen name="bots" options={{ title: "Bots" }} />
         <Stack.Screen name="bot" options={{ title: "Bot" }} />
-        <Stack.Screen name="computer" options={{ title: "Computer" }} />
-        <Stack.Screen name="routine" options={{ title: "Routine" }} />
-        <Stack.Screen name="memory" options={{ title: "Memory" }} />
-        <Stack.Screen name="rules" options={{ title: "Custom rules" }} />
-        <Stack.Screen name="plugins" options={{ title: "Plugins" }} />
+        <Stack.Screen name="settings" options={{ title: "Settings" }} />
+        <Stack.Screen name="connect" options={{ title: "Add connection" }} />
         {/* Only the way back to Home after linking the company account: never seen, so no header flashes. */}
         <Stack.Screen
           name="company-sign-in/linked"

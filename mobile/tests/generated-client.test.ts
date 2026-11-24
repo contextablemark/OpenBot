@@ -84,6 +84,8 @@ const ada = {
   canManage: true,
 };
 
+/** What each request was sent with in its Authorization header: an API key, or nothing. */
+const authorizations: (string | null)[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -91,6 +93,7 @@ const server = Bun.serve({
     const url = new URL(request.url);
     const text = await request.text();
     named.push(request.headers.get("openbot-client"));
+    authorizations.push(request.headers.get("authorization"));
     organizationNamed.push({
       request: `${request.method} ${url.pathname}`,
       organization: request.headers.get("openbot-organization"),
@@ -436,6 +439,16 @@ mock.module("../src/auth", () => ({
     },
   },
 }));
+/** The API key in use (src/key-access.ts), or null while the app is signed in as a person. */
+let keyInUse: {
+  server: string;
+  key: string;
+  organization: string;
+} | null = null;
+mock.module("../src/key-access", () => ({
+  keyAccess: async () => keyInUse,
+  keyAccessNow: () => keyInUse,
+}));
 mock.module("expo-crypto", () => ({
   randomUUID: () => crypto.randomUUID(),
 }));
@@ -541,6 +554,29 @@ test("a read goes to the deployment at the API's address, in the organization th
   seen.length = 0;
   await getBot(ORGANIZATION_ID, "a b");
   expect(seen.map((request) => request.path)).toEqual([`${ORG}/bots/a%20b`]);
+});
+
+test("with an API key, a request goes to the key's OpenBot in the key's organization, with the key and no cookie", async () => {
+  keyInUse = { server: serverUrl, key: "obk_test", organization: "org_work" };
+  seen.length = 0;
+  authorizations.length = 0;
+  organizationNamed.length = 0;
+  try {
+    const answer = await getBot(ORGANIZATION_ID, "a b");
+    expect(answer.bot.id).toBe("a b");
+    expect(await organizationChoices()).toEqual({
+      organizations: [{ id: "org_work", active: true }],
+      currentId: "org_work",
+    });
+  } finally {
+    keyInUse = null;
+  }
+  // Straight to the key's organization: its organizations aren't listed, and nothing names one in a header.
+  expect(seen.map(({ path, cookie }) => ({ path, cookie }))).toEqual([
+    { path: `${ORG}/bots/a%20b`, cookie: null },
+  ]);
+  expect(authorizations).toEqual(["Bearer obk_test"]);
+  expect(organizationNamed.map((one) => one.organization)).toEqual([null]);
 });
 
 test("every write carries an Idempotency-Key of its own, and a retry's own key is kept", async () => {

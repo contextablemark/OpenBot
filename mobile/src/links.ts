@@ -5,10 +5,10 @@
  */
 export function notificationDestination(value: unknown):
   | {
-      pathname: "/conversation" | "/approvals";
+      pathname: "/conversation";
       params: { channelId: string; requestId?: string };
     }
-  | { pathname: "/needs-you"; params: Record<string, never> }
+  | { pathname: "/"; params: Record<string, never> }
   | null {
   if (
     !value ||
@@ -33,7 +33,8 @@ export function notificationDestination(value: unknown):
   )
     return null;
   if (url.hostname === "needs-you")
-    return url.search ? null : { pathname: "/needs-you", params: {} };
+    // The app shows conversations and Bots only for now: what needs the person opens Home.
+    return url.search ? null : { pathname: "/", params: {} };
   if (url.hostname !== "conversation" && url.hostname !== "approvals")
     return null;
   const channelId = url.searchParams.get("channelId");
@@ -41,7 +42,8 @@ export function notificationDestination(value: unknown):
   if (!channelId || channelId.length > 200 || (requestId?.length ?? 0) > 200)
     return null;
   return {
-    pathname: url.hostname === "conversation" ? "/conversation" : "/approvals",
+    // An approval is asked in its conversation, which is where the app answers it now.
+    pathname: "/conversation",
     params: { channelId, ...(requestId ? { requestId } : {}) },
   };
 }

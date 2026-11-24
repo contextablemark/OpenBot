@@ -19,6 +19,7 @@ import {
   SECURITY_UPDATE_SENTENCE,
   type VersionVerdict,
 } from "./client-version";
+import { keyAccessNow } from "./key-access";
 import { heading, muted } from "./ui";
 import { checkVersion } from "./version-check";
 
@@ -88,7 +89,7 @@ export function VersionGate({
               <Text style={styles.sentence}>{verdict.detail}</Text>
             </>
           )}
-          <Text style={muted}>{serverUrl}</Text>
+          <Text style={muted}>{keyAccessNow()?.server ?? serverUrl}</Text>
           <View style={styles.action}>
             <Button title="Try again" onPress={onRetry} />
           </View>
@@ -100,7 +101,7 @@ export function VersionGate({
 
 const styles = StyleSheet.create({
   cover: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",

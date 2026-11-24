@@ -7,13 +7,16 @@ import { openWith } from "./link-company";
 import type { OrganizationStore } from "./organization";
 import { clientHeaders } from "./release";
 
+/*
+ * The OpenBot people sign in to, fixed when the app is built. Optional: a build without one offers only an API key
+ * (./key-access.ts), for an OpenBot with no sign-in of its own, typed in on the phone.
+ */
 const configured = process.env.EXPO_PUBLIC_SERVER_URL;
-if (!configured)
-  throw new Error(
-    "Set EXPO_PUBLIC_SERVER_URL to your OpenBot deployment before building the native app.",
-  );
-const endpoint = new URL(configured);
+/** Where nothing was configured: never dialled, since sign-in's requests are answered on the phone (below). */
+const NOWHERE = "https://openbot.invalid";
+const endpoint = new URL(configured || NOWHERE);
 if (
+  configured &&
   endpoint.protocol !== "https:" &&
   !(__DEV__ && endpoint.protocol === "http:")
 )
@@ -22,11 +25,23 @@ if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
   throw new Error(
     "Use the public deployment URL without credentials or query parameters.",
   );
-export const serverUrl = endpoint.origin;
+/** Whether this build has an OpenBot to sign in to. Without one, only an API key can be used. */
+export const signInConfigured = Boolean(configured);
+/** The OpenBot this build signs in to, or "" when it has none. */
+export const serverUrl = configured ? endpoint.origin : "";
+/** A build with nowhere to sign in: every request of the sign-in client is answered "nobody is signed in". */
+const signedOutFetch = async (_input: unknown, _init?: unknown) =>
+  new Response("null", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 export const authClient = createAuthClient({
-  baseURL: serverUrl,
+  baseURL: endpoint.origin,
   // Sign-in's own requests name the app too; the Expo plugin keeps these and adds the session's cookie.
-  fetchOptions: { headers: clientHeaders() },
+  fetchOptions: {
+    headers: clientHeaders(),
+    ...(configured ? {} : { customFetchImpl: signedOutFetch }),
+  },
   plugins: [
     expoClient({
       scheme: "openbotmobile",
